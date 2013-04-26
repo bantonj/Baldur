@@ -1,0 +1,158 @@
+<html>
+<head>
+<script>
+// Check for the various File API support.
+if (window.File && window.FileReader && window.FileList && window.Blob) {
+  // Great success! All the File APIs are supported.
+} else {
+  alert('The File APIs are not fully supported in this browser.');
+}
+</script>
+<script src="sparkmd5.js"></script>
+</head>
+<table>
+	<tr>
+		<td><h1>Javascript Fractional Hasher<h1></td>
+	</tr>
+	<tr>
+		<td>Note: Javascript version is much slower than <a href="">downloadable client.</a></td>
+	</tr>
+	<tr>
+		<td></td>
+	</tr>
+	<tr>
+		<td><input type="file" id="files" name="files[]" multiple />
+		<output id="list"></output></td>
+		<td><div id="done_div">---READY---</div></td>
+		<td><input type="text" id='chunk_size' value=5242880>Chunk Size</input>	</td>
+	</tr>
+</table>
+<div>
+	<textarea id="frac_textarea" rows="30" cols="100"></textarea>
+</div>
+<div>
+	<table>
+		<tr>
+			<td>Whole Hash</td>
+			<td><progress value="0" min="0" max="10" id="whole_meter"></meter></td>
+		</tr>
+		<tr>
+			<td>Frac Hash</td>
+			<td><progress value="0" min="0" max="10" id="frac_meter"></meter></td>
+		</tr>
+	</table>
+</div>
+<script>
+var frac_obj = {}
+var whole_done = false;
+var frac_done = false;
+document.getElementById("files").addEventListener("change", create_frac_hash);
+
+function create_frac_hash(){
+	document.getElementById("frac_textarea").value = "";
+	document.getElementById("done_div").innerHTML = "---RUNNING---";
+	create_full_hash();
+	create_frac_hashes(parseInt(document.getElementById("chunk_size").value));
+}
+
+function create_full_hash(){
+    var wblobSlice = File.prototype.slice || File.prototype.mozSlice || File.prototype.webkitSlice;
+        var wfile = document.getElementById("files").files[0]
+        var wchunkSize = 2097152;                               // read in chunks of 2MB
+        var wchunks = Math.ceil(wfile.size / wchunkSize);
+        var wcurrentChunk = 0
+        var wspark = new SparkMD5.ArrayBuffer();
+		var whole_meter = document.getElementById("whole_meter");
+		whole_meter.max = wchunks;
+        wfrOnload = function(e) {
+            //console.log("read chunk nr", currentChunk + 1, "of", chunks);
+            wspark.append(e.target.result);                 // append array buffer
+            wcurrentChunk++;
+			whole_meter.value = wcurrentChunk;
+
+            if (wcurrentChunk < wchunks) {
+                wloadNext();
+            }
+            else {
+              // console.log("finished loading");
+			  frac_obj['whole_hash'] = wspark.end();
+			  whole_done = true;
+			  if (frac_done){
+				  document.getElementById("frac_textarea").value = JSON.stringify(frac_obj);
+				  document.getElementById("done_div").innerHTML = "--- DONE ---";
+			  }
+              //alert("computed hash: " + frac_obj['whole_hash']); // compute hash
+            }
+        },
+        frOnerror = function () {
+            //console.warn("oops, something went wrong.");
+        };
+
+    function wloadNext() {
+        var wfileReader = new FileReader();
+        wfileReader.onload = wfrOnload;
+        wfileReader.onerror = frOnerror;
+
+        var wstart = wcurrentChunk * wchunkSize,
+            wend = ((wstart + wchunkSize) >= wfile.size) ? wfile.size : wstart + wchunkSize;
+
+        wfileReader.readAsArrayBuffer(wblobSlice.call(wfile, wstart, wend));
+    };
+
+    wloadNext();
+}
+
+function create_frac_hashes(chunkSize){
+    var blobSlice = File.prototype.slice || File.prototype.mozSlice || File.prototype.webkitSlice,
+        file = document.getElementById("files").files[0];
+        chunks = Math.ceil(file.size / chunkSize);
+		frac_obj['pieces'] = chunks;
+		var frac_meter = document.getElementById("frac_meter");
+		frac_meter.max = chunks;
+        currentChunk = 0;
+        frOnload = function(e) {
+            //console.log("read chunk nr", currentChunk + 1, "of", chunks);
+			spark = new SparkMD5.ArrayBuffer();
+			spark.append(e.target.result);                 // append array buffer
+			var start = currentChunk * chunkSize;
+            var end = (((start + chunkSize) >= file.size) ? file.size : start + chunkSize) - 1;
+			frac_obj[currentChunk.toString()] = {"start": start, "end": end, "hash": spark.end()};
+            currentChunk++;
+			frac_meter.value = currentChunk;
+
+            if (currentChunk < chunks) {
+                loadNext();
+            }
+            else {
+              // console.log("finished loading");
+			  //frac_obj['whole_hash'] = spark.end();
+              // alert("frac hashes done, pieces: " + frac_obj['pieces']);
+			  frac_done = true;
+			  if (whole_done){
+				   document.getElementById("frac_textarea").value = JSON.stringify(frac_obj);
+				   document.getElementById("done_div").innerHTML = "--- DONE ---";
+			   }
+			   //console.log(frac_obj);
+            }
+        },
+        frOnerror = function () {
+            //console.warn("oops, something went wrong.");
+        };
+
+    function loadNext() {
+        var fileReader = new FileReader();
+        fileReader.onload = frOnload;
+        fileReader.onerror = frOnerror;
+
+        var start = currentChunk * chunkSize,
+            end = ((start + chunkSize) >= file.size) ? file.size : start + chunkSize;
+
+        fileReader.readAsArrayBuffer(blobSlice.call(file, start, end));
+    };
+
+    loadNext();
+}
+	
+</script>
+</body>
+</html>

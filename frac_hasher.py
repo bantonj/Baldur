@@ -21,7 +21,7 @@ except ImportError:
         
 class FractionalHasher(object):
     
-    def __init__(self, filename, chunk_size=1048576):
+    def __init__(self, filename, chunk_size=5242880):
         self.filename = filename
         self.chunk_size = chunk_size
         self.filesize = os.path.getsize(self.filename)
@@ -160,7 +160,7 @@ if __name__ == '__main__':
                         "makes new fractional hash of file given as argument, must also use -f \
                         to specify fractional hash file")
     parser.add_argument('-s', '--chunksize', nargs='?', default=None, help=\
-                        "specifies custom chunksize, default is 1MB (1048576 bytes)")
+                        "specifies custom chunksize, default is 5MB (5242880 bytes)")
     parser.add_argument('-c', '--check', nargs='?', default=None, help=\
                         "checks fractional hash of file given as argument, must also use -f \
                         to specify fractional hash file")

@@ -33,14 +33,6 @@ fileDownloader.socket.getfqdn = fqdn_obj.fakefqdn
 #       Add final hash of total file, maybe make it optional, but on by default.
 #       It appears that Brython has enough implemented to make a javascript version of frac_hasher to ease making frac hashes for users.
 
-threadlets = 32
-link ="http://ipv4.download.thinkbroadband.com/1GB.zip" 
-#link = "http://127.0.0.1:8080/1GB.zip" #uses mongoose in downloads folder
-#link = "http://emergingpictures.cdnetworks.net/emergingpictures/TEMP/1GB.zip"
-down_dir = r'C:\test-downloads\test_download\1gb'
-frac_hash = r'1GB_5mb_chunks.zip.frac_hash'
-#frac_hash = r'1GB_1mb_chunks.zip.frac_hash'
-
     
 class BaldurClient(object):
     
@@ -69,7 +61,7 @@ class BaldurClient(object):
             self.q.put(x)
 
     def check_threadlet_size(self):
-        if self.frac_hash_data['pieces'] < threadlets:
+        if self.frac_hash_data['pieces'] < self.threadlets:
             self.threadlets = self.frac_hash_data['pieces'] - 8
     
     def start_download(self):
@@ -83,6 +75,17 @@ class BaldurClient(object):
         print '\ntotal download time', (time.clock() - self.start_time)/60, ' minutes'
         self.clean_up()
         self.assemble_chunks()
+        print 'validating assembled file'
+        self.check_assembled()
+        
+    def check_assembled(self):
+        full_filename = os.path.join(self.down_dir, self.get_url_filename())
+        hashlet = Hashlet(1, self.down_dir, self.q, self.frac_hash_data)
+        if not hashlet.hash_file(full_filename) == self.frac_hash_data['whole_hash']:
+            print 'Assembled file failed final validation. Sorry.'
+        else:
+            print 'Assembled file: {0} passed validation.'.format(self.get_url_filename())
+            print 'Download successful.'
         
     def spawn_threadlets(self):
         stagger = 10
@@ -105,8 +108,8 @@ class BaldurClient(object):
     
     def download_q(self):
         while not self.q.empty() or self.tracker.workers:
-            sys.stdout.write('\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b')
-            sys.stdout.write(str(self.q.qsize()) + ' remaining chunks to download')
+            sys.stdout.write('\r')
+            sys.stdout.write('{0:8} remaining chunks to download'.format(str(self.q.qsize())))
             speed = self.tracker.auto_threadlet_calc()
             if len(self.ppool) < self.tracker.cur_threadlets:
                 if not self.q.empty():

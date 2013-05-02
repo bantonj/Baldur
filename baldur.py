@@ -29,11 +29,6 @@ fqdn_obj = Fake_FQDN()
 fileDownloader.socket.getfqdn = fqdn_obj.fakefqdn
 
 
-#Notes: 
-#       Add final hash of total file, maybe make it optional, but on by default.
-#       It appears that Brython has enough implemented to make a javascript version of frac_hasher to ease making frac hashes for users.
-
-    
 class BaldurClient(object):
     
     def __init__(self, frac_hash_file, threadlets, down_dir, link, max_threadlets=1000, auth_tuple=None):
@@ -64,28 +59,13 @@ class BaldurClient(object):
         if self.frac_hash_data['pieces'] < self.threadlets:
             self.threadlets = self.frac_hash_data['pieces'] - 8
     
-    def start_download(self):
-        self.spawn_threadlets()
-        self.download_q()
-        print '\nvalidating chunks'
-        self.check_pieces()
-        if self.q.qsize():
-            print 'redownloading a few chunks'
-            self.download_q()
-        print '\ntotal download time', (time.clock() - self.start_time)/60, ' minutes'
-        self.clean_up()
-        self.assemble_chunks()
-        print 'validating assembled file'
-        self.check_assembled()
-        
     def check_assembled(self):
         full_filename = os.path.join(self.down_dir, self.get_url_filename())
         hashlet = Hashlet(1, self.down_dir, self.q, self.frac_hash_data)
         if not hashlet.hash_file(full_filename) == self.frac_hash_data['whole_hash']:
-            print 'Assembled file failed final validation. Sorry.'
+            return False
         else:
-            print 'Assembled file: {0} passed validation.'.format(self.get_url_filename())
-            print 'Download successful.'
+            return True
         
     def spawn_threadlets(self):
         stagger = 10
@@ -106,10 +86,10 @@ class BaldurClient(object):
             self.ppool.spawn(d.download_threadlet)
             count += 1
     
-    def download_q(self):
+    def download_q(self, callback=None):
         while not self.q.empty() or self.tracker.workers:
-            sys.stdout.write('\r')
-            sys.stdout.write('{0:8} remaining chunks to download'.format(str(self.q.qsize())))
+            if callback:
+                callback(self.q.qsize)
             speed = self.tracker.auto_threadlet_calc()
             if len(self.ppool) < self.tracker.cur_threadlets:
                 if not self.q.empty():
@@ -342,7 +322,37 @@ class ThreadletTracker(object):
                 return False
             else:
                 self.last_check = time.clock()
+
+class CLIB(object):
     
+    def __init__(self, frac_hash_file, threadlets, down_dir, link, max_threadlets=1000, auth_tuple=None):
+        self.baldur_client = BaldurClient(frac_hash_file, threadlets, down_dir, link, max_threadlets=1000, auth_tuple=None)
+    
+    def start_download(self):
+        self.baldur_client.spawn_threadlets()
+        self.baldur_client.download_q(self.download_progress)
+        print '\nvalidating chunks'
+        self.baldur_client.check_pieces()
+        if self.baldur_client.q.qsize():
+            print 'redownloading a few chunks'
+            self.baldur_client.download_q()
+        print '\ntotal download time', (time.clock() - self.baldur_client.start_time)/60, ' minutes'
+        self.baldur_client.clean_up()
+        self.baldur_client.assemble_chunks()
+        print 'validating assembled file'
+        self.baldur_client.check_assembled()
+        
+    def check_assembled(self):
+        hash_ok = self.baldur_client.check_assembled()
+        if hask_ok:
+            print 'Assembled file failed final validation. Sorry.'
+        else:
+            print 'Assembled file: {0} passed validation.'.format(self.baldur_client.get_url_filename())
+            print 'Download successful.'
+            
+    def download_progress(self, qsize):
+        sys.stdout.write('\r')
+        sys.stdout.write('{0:8} remaining chunks to download'.format(str(qsize())))
     
 if __name__ == '__main__':  
     parser = argparse.ArgumentParser(description='Downloads files over HTTP with frac hash checking.')
@@ -373,6 +383,6 @@ if __name__ == '__main__':
     else:
         auth_tuple = None
         
-    bclient = BaldurClient(args.fracfile, int(args.threadlets), args.downdir, args.link, auth_tuple)
+    bclient = CLIB(args.fracfile, int(args.threadlets), args.downdir, args.link, auth_tuple)
     print 'Beginning download...'
     bclient.start_download()

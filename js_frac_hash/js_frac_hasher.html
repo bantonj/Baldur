@@ -115,7 +115,7 @@ function create_frac_hashes(chunkSize){
 			spark = new SparkMD5.ArrayBuffer();
 			spark.append(e.target.result);                 // append array buffer
 			var start = currentChunk * chunkSize;
-            var end = (((start + chunkSize) >= file.size) ? file.size : start + chunkSize) - 1;
+            var end = (((start + chunkSize) >= file.size) ? file.size : start + chunkSize -1);
 			frac_obj[currentChunk.toString()] = {"start": start, "end": end, "hash": spark.end()};
             currentChunk++;
 			frac_meter.value = currentChunk;

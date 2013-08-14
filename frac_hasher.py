@@ -38,7 +38,7 @@ class FractionalHasher(object):
                 canceled = callback(percent_done)
                 if canceled == 'canceled':
                     return False
-            if (self.filesize-self.f.tell()) < self.chunk_size:
+            if (self.filesize-self.f.tell()) <= self.chunk_size:
                 self.h_dict[num] = {'start': str(self.f.tell()), 'end': str(self.filesize), 'hash': self.__part_hasher__()}
             else:
                 self.h_dict[num] = {'start': str(self.f.tell()), 'end': str(self.f.tell()+self.chunk_size-1), 'hash': self.__part_hasher__()}

@@ -338,13 +338,14 @@ class CLIB(object):
             self.baldur_client.download_q()
         print '\ntotal download time', (time.clock() - self.baldur_client.start_time)/60, ' minutes'
         self.baldur_client.clean_up()
+        print 'assembling file'
         self.baldur_client.assemble_chunks()
         print 'validating assembled file'
-        self.baldur_client.check_assembled()
+        self.check_assembled()
         
     def check_assembled(self):
         hash_ok = self.baldur_client.check_assembled()
-        if hask_ok:
+        if not hash_ok:
             print 'Assembled file failed final validation. Sorry.'
         else:
             print 'Assembled file: {0} passed validation.'.format(self.baldur_client.get_url_filename())

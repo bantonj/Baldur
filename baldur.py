@@ -31,7 +31,8 @@ fileDownloader.socket.getfqdn = fqdn_obj.fakefqdn
 
 class BaldurClient(object):
     
-    def __init__(self, frac_hash_file, threadlets, down_dir, link, max_threadlets=1000, auth_tuple=None):
+    def __init__(self, frac_hash_file, threadlets, down_dir, link=None, max_threadlets=1000, auth_tuple=None,
+                 aws_key=None, aws_secret_key=None, aws_bucket_name=None, aws_file_key=None):
         self.frac_hash_file = frac_hash_file
         self.frac_hash_data = self.load_frac_hash()
         self.threadlets = threadlets
@@ -40,10 +41,15 @@ class BaldurClient(object):
         self.link = link
         self.max_threadlets = max_threadlets
         self.auth_tuple = auth_tuple
+        self.aws_key = aws_key
+        self.aws_secret_key = aws_secret_key
+        self.aws_bucket_name = aws_bucket_name
+        self.aws_file_key = aws_file_key
         self.q = queue.JoinableQueue()
+        self.message_q = queue.JoinableQueue()
         self.load_q()
         self.ppool = Pool()
-        self.tracker = ThreadletTracker(self.threadlets, self.down_dir, self.q, self.frac_hash_data, self.max_threadlets)
+        self.tracker = ThreadletTracker(self.threadlets, self.down_dir, self.q, self.message_q, self.frac_hash_data, self.max_threadlets)
         self.id_counter = 0
         self.start_time = time.clock()
 
@@ -61,7 +67,7 @@ class BaldurClient(object):
     
     def check_assembled(self):
         full_filename = os.path.join(self.down_dir, self.get_url_filename())
-        hashlet = Hashlet(1, self.down_dir, self.q, self.frac_hash_data)
+        hashlet = Hashlet(1, self.down_dir, self.q, self.message_q, self.frac_hash_data)
         if not hashlet.hash_file(full_filename) == self.frac_hash_data['whole_hash']:
             return False
         else:
@@ -80,7 +86,9 @@ class BaldurClient(object):
                 count = 0
                 self.tracker.clean_dead()
                 gevent.sleep(sleep_dur)
-            d = Downloadlet(self.id_counter, self.q, self.down_dir, self.link, self.frac_hash_data, self.auth_tuple)
+            d = Downloadlet(self.id_counter, self.q, self.message_q, self.down_dir, self.link, self.frac_hash_data, 
+                            self.auth_tuple, self.aws_key, self.aws_secret_key, self.aws_bucket_name,
+                            self.aws_file_key)
             self.id_counter += 1
             self.tracker.add(d)
             self.ppool.spawn(d.download_threadlet)
@@ -98,12 +106,12 @@ class BaldurClient(object):
     
     def check_pieces(self):
         for chunk in range(self.frac_hash_data['pieces']):
-            hashlet = Hashlet(1, self.down_dir, self.q, self.frac_hash_data)
+            hashlet = Hashlet(1, self.down_dir, self.q, self.message_q, self.frac_hash_data)
             hashlet.check_chunk(chunk, self.down_dir)
 
     def get_url_filename(self):
         if self.auth_tuple:
-            downloader = fileDownloader.DownloadFile(self.link, auth=auth_tupe)
+            downloader = fileDownloader.DownloadFile(self.link, auth=self.auth_tuple)
         else:
             downloader = fileDownloader.DownloadFile(self.link)
         return downloader.getUrlFilename(self.link)
@@ -120,6 +128,12 @@ class BaldurClient(object):
             os.remove(filename)
         full_file.close()
 
+    def check_messages(self):
+        messages = []
+        while not self.message_q.empty():
+            messages.append(self.message_q.get())
+        return messages
+
     def clean_up(self):
         self.ppool.kill()
         self.tracker.hpool.kill()
@@ -127,10 +141,11 @@ class BaldurClient(object):
     
     
 class Hashlet(object):
-    def __init__(self, id, down_dir, g_queue, frac_hash_data):
+    def __init__(self, id, down_dir, g_queue, message_q, frac_hash_data):
         self.id = id
         self.down_dir = down_dir
         self.g_queue = g_queue
+        self.message_q = message_q
         self.frac_hash_data = frac_hash_data
         self.dead = False
         
@@ -165,30 +180,43 @@ class Hashlet(object):
         
     
 class Downloadlet(object):
-    def __init__(self, id, g_queue, down_dir, link, frac_hash_data, auth_tuple):
+    def __init__(self, id, g_queue, message_q, down_dir, link, frac_hash_data, auth_tuple,
+                 aws_key, aws_secret_key, aws_bucket_name, aws_file_key):
         self.id = id
         self.g_queue = g_queue
+        self.message_q = message_q
         self.chunk_id = None
         self.down_dir = down_dir
         self.link = link
         self.frac_hash_data = frac_hash_data
         self.auth_tuple = auth_tuple
+        self.aws_key = aws_key
+        self.aws_secret_key = aws_secret_key
+        self.aws_bucket_name = aws_bucket_name
+        self.aws_file_key = aws_file_key
         self.speed_calc_dict = {}
         self.timeout = False
         self.dead = False
     
-    def download_chunk(self, link, start_pos, end_pos, filename, callback=None):
+    def download_chunk(self, start_pos, end_pos, filename, callback=None):
         self.start_pos = start_pos
         self.speed_calc_dict['first_time'] = time.clock()
         self.speed_calc_dict['last_speed'] = 0
         if self.auth_tuple:
-            downloader = fileDownloader.DownloadFile(link, localFileName=filename, auth=auth_tupe, timeout=20)
+            downloader = fileDownloader.DownloadFile(self.link, localFileName=filename, auth=self.auth_tuple, timeout=20)
+        elif self.aws_key:
+            downloader = fileDownloader.DownloadFile(aws_key=self.aws_key, aws_secret_key=self.aws_secret_key,
+                                             aws_bucket_name=self.aws_bucket_name, aws_file_key=self.aws_file_key,
+                                             localFileName=filename, fast_start=True)
         else:
-            downloader = fileDownloader.DownloadFile(link, localFileName=filename, timeout=20)
+            downloader = fileDownloader.DownloadFile(self.link, localFileName=filename, timeout=20)
         try:
-            downloader.partialDownload(start_pos, end_pos, callBack=callback)
+            if self.aws_key:
+                downloader.download_s3_partial(start_pos, end_pos, callBack=callback)
+            else:
+                downloader.partialDownload(start_pos, end_pos, callBack=callback)
         except urllib2.URLError as e:
-            #print 'caught error ', e
+            self.message_q.put('caught error %s' % (e,))
             self.timeout = True
             
     def calc_speed(self, cursize):
@@ -210,7 +238,7 @@ class Downloadlet(object):
         if chunk or chunk == 0:
             filename = os.path.join(self.down_dir, str(chunk)+'_'+self.frac_hash_data[str(chunk)]['start']+'-'+self.frac_hash_data[str(chunk)]['end'])
             try:
-                self.download_chunk(self.link, self.frac_hash_data[str(chunk)]['start'], self.frac_hash_data[str(chunk)]['end'], filename, callback=self.calc_speed)
+                self.download_chunk(self.frac_hash_data[str(chunk)]['start'], self.frac_hash_data[str(chunk)]['end'], filename, callback=self.calc_speed)
             except Exception, t:
                 print t
                 self.g_queue.put(chunk)
@@ -220,8 +248,9 @@ class Downloadlet(object):
         return self.speed_calc_dict
             
 class ThreadletTracker(object):
-    def __init__(self, threadlets, down_dir, g_queue, frac_hash_data, max_threadlets):
+    def __init__(self, threadlets, down_dir, g_queue, message_q, frac_hash_data, max_threadlets):
         self.g_queue = g_queue
+        self.message_q = message_q
         self.frac_hash_data = frac_hash_data
         self.down_dir = down_dir
         self.max_threadlets = max_threadlets
@@ -256,7 +285,7 @@ class ThreadletTracker(object):
                 self.timeouts += 1
             else:
                 if worker.chunk_id:
-                    hashlet = Hashlet(worker.id, self.down_dir, self.g_queue, self.frac_hash_data)
+                    hashlet = Hashlet(worker.id, self.down_dir, self.g_queue, self.message_q, self.frac_hash_data)
                     self.hpool.spawn(hashlet.check_chunk, worker.chunk_id, dir)
         self.workers = alive_workers
         return len(alive_workers)
@@ -325,8 +354,14 @@ class ThreadletTracker(object):
 
 class CLIB(object):
     
-    def __init__(self, frac_hash_file, threadlets, down_dir, link, max_threadlets=1000, auth_tuple=None):
-        self.baldur_client = BaldurClient(frac_hash_file, threadlets, down_dir, link, max_threadlets=1000, auth_tuple=None)
+    def __init__(self, frac_hash_file, threadlets, down_dir, link=None, max_threadlets=1000, auth_tuple=None,
+                 aws_key=None, aws_secret_key=None, aws_bucket_name=None, aws_file_key=None):
+        if args.aws_key:
+            self.baldur_client = BaldurClient(args.fracfile, int(args.threadlets), args.downdir, 
+                       aws_key=args.aws_key, aws_secret_key=args.aws_secret_key, aws_bucket_name=args.s3_bucket, 
+                       aws_file_key=args.s3_file_key)
+        else:
+            self.baldur_client = BaldurClient(args.fracfile, int(args.threadlets), args.downdir, args.link, auth_tuple=auth_tuple)
     
     def start_download(self):
         self.baldur_client.spawn_threadlets()
@@ -352,6 +387,9 @@ class CLIB(object):
             print 'Download successful.'
             
     def download_progress(self, qsize):
+        messages = self.baldur_client.check_messages()
+        for message in messages:
+            print message
         sys.stdout.write('\r')
         sys.stdout.write('{0:8} remaining chunks to download'.format(str(qsize())))
     
@@ -369,6 +407,14 @@ if __name__ == '__main__':
                     "Basic authentication username.")
     parser.add_argument('-p', '--userpass', nargs='?', const='a', default=None, help=\
                     "Basic authentication password.")
+    parser.add_argument('-k', '--aws_key', nargs='?', const='a', default=None, help=\
+                    "AWS key for S3 download.")
+    parser.add_argument('-s', '--aws_secret_key', nargs='?', const='a', default=None, help=\
+                    "AWS secret key for S3 download.")
+    parser.add_argument('-b', '--s3_bucket', nargs='?', const='a', default=None, help=\
+                    "S3 bucket name for S3 download.")
+    parser.add_argument('-y', '--s3_file_key', nargs='?', const='a', default=None, help=\
+                    "S3 file key for S3 download.")
 
     
     args = parser.parse_args()
@@ -383,7 +429,11 @@ if __name__ == '__main__':
         auth_tuple = (args.userauth, args.userpass)
     else:
         auth_tuple = None
-        
-    bclient = CLIB(args.fracfile, int(args.threadlets), args.downdir, args.link, auth_tuple)
+    if args.aws_key:
+        bclient = CLIB(args.fracfile, int(args.threadlets), args.downdir, 
+                       aws_key=args.aws_key, aws_secret_key=args.aws_secret_key, aws_bucket_name=args.s3_bucket, 
+                       aws_file_key=args.s3_file_key)
+    else:
+        bclient = CLIB(args.fracfile, int(args.threadlets), args.downdir, args.link, auth_tuple=auth_tuple)
     print 'Beginning download...'
     bclient.start_download()

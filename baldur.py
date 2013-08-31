@@ -157,9 +157,11 @@ class Hashlet(object):
         if not os.path.exists(filename):
             self.g_queue.put(chunk_id)
         elif not os.path.getsize(filename) == (filesize):
+            print 'size bad', chunk_id
             self.g_queue.put(chunk_id)
             return
         if not self.frac_hash_data[str(chunk_id)]['hash'] == self.hash_file(filename):
+            print 'hash bad', chunk_id
             self.g_queue.put(chunk_id)
         
     def hash_file(self, filename, callback=None):
@@ -366,11 +368,14 @@ class CLIB(object):
     def start_download(self):
         self.baldur_client.spawn_threadlets()
         self.baldur_client.download_q(self.download_progress)
-        print '\nvalidating chunks'
-        self.baldur_client.check_pieces()
-        if self.baldur_client.q.qsize():
-            print 'redownloading a few chunks'
-            self.baldur_client.download_q()
+        while 1:
+            print '\nvalidating chunks'
+            self.baldur_client.check_pieces()
+            if self.baldur_client.q.qsize():
+                print 'redownloading a few chunks'
+                self.baldur_client.download_q()
+            else:
+                break
         print '\ntotal download time', (time.clock() - self.baldur_client.start_time)/60, ' minutes'
         self.baldur_client.clean_up()
         print 'assembling file'

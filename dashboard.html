@@ -1,0 +1,80 @@
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Baldur Server Dashboard</title>
+<link rel="stylesheet" href="http://code.jquery.com/ui/1.10.3/themes/smoothness/jquery-ui.css" />
+<script src="http://code.jquery.com/jquery-1.9.1.js"></script>
+<script src="http://code.jquery.com/ui/1.10.3/jquery-ui.js"></script>
+ <style>
+.ui-progressbar {
+position: relative;
+}
+.progress-label {
+position: absolute;
+left: 50%;
+top: 4px;
+font-weight: bold;
+text-shadow: 1px 1px 0 #fff;
+}
+</style>
+<script>
+bal_globals = {}
+$(function() {
+function prog_update(percent, id){
+$( "#progressbar"+id ).progressbar({
+value: percent
+});
+$( "#progress-label"+id ).text(percent);
+}
+function make_list(data){
+	bal_globals.num_downs = data.length;
+	if (data.length < 1){
+		$(".download_list").empty();
+		$( ".download_list" ).append('Nothing Downloaded since last restart.');
+		return
+	}
+	for (var i=0;i<data.length;i++){
+		$( ".download_list" ).append( 'file: '+data[i].filename+'</br>client: '+data[i].address+'</br><div id="progressbar'+i+'"><div class="progress-label" id="progress-label'+i+'""></div></div>' ).each(function(){prog_update(data[i].percent_done, i)});
+	}
+}
+
+function update_all(data){
+	console.log(bal_globals.num_downs);
+	if (bal_globals.num_downs != data.length){
+		$(".download_list").empty();
+		make_list(data);
+	}
+	if (data.length < 1){
+		$(".download_list").empty();
+		$( ".download_list" ).append('Nothing Downloaded since last restart.');
+		return
+	}
+	for (var i=0;i<data.length;i++){
+		prog_update(data[i].percent_done, i);
+	}
+}
+
+//$.getJSON('http://192.168.16.36:5649/dashboard-json', function(data){console.log(data)});
+function update_progress(){
+	$.ajax({
+	dataType: "json",
+	url: '/dashboard-json',
+	success: function(data){update_all(data)}
+	});
+}
+function make_progs(){
+	$.ajax({
+	dataType: "json",
+	url: '/dashboard-json',
+	success: function(data){make_list(data)}
+	});
+}
+make_progs();
+window.setInterval(update_progress, 3000);
+});
+</script>
+</head>
+<body>
+<div class="download_list"></div>
+</body>
+</html>

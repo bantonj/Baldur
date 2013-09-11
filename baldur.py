@@ -12,6 +12,7 @@ from gevent.pool import Pool
 import urllib2
 import hashlib
 import argparse
+import httplib
 
 class Fake_FQDN(object):
     def __init__(self):
@@ -28,13 +29,25 @@ fqdn_obj = Fake_FQDN()
 
 fileDownloader.socket.getfqdn = fqdn_obj.fakefqdn
 
+def rest_get(url, path):
+    conn = httplib.HTTPConnection(url)
+    conn.request("GET", path)
+    try:
+        r1 = conn.getresponse()
+    except:
+        return "{}"
+    return r1.read()
+
 
 class BaldurClient(object):
     
-    def __init__(self, frac_hash_file, threadlets, down_dir, link=None, max_threadlets=1000, auth_tuple=None,
-                 aws_key=None, aws_secret_key=None, aws_bucket_name=None, aws_file_key=None):
+    def __init__(self, frac_hash_file=None, threadlets=1, down_dir=None, link=None, max_threadlets=1000, auth_tuple=None,
+                 aws_key=None, aws_secret_key=None, aws_bucket_name=None, aws_file_key=None, frac_hash_data=None):
         self.frac_hash_file = frac_hash_file
-        self.frac_hash_data = self.load_frac_hash()
+        if self.frac_hash_file:
+            self.frac_hash_data = self.load_frac_hash()
+        else:
+            self.frac_hash_data = frac_hash_data
         self.threadlets = threadlets
         self.check_threadlet_size()
         self.down_dir = down_dir
@@ -157,11 +170,9 @@ class Hashlet(object):
         if not os.path.exists(filename):
             self.g_queue.put(chunk_id)
         elif not os.path.getsize(filename) == (filesize):
-            print 'size bad', chunk_id
             self.g_queue.put(chunk_id)
             return
         if not self.frac_hash_data[str(chunk_id)]['hash'] == self.hash_file(filename):
-            print 'hash bad', chunk_id
             self.g_queue.put(chunk_id)
         
     def hash_file(self, filename, callback=None):
@@ -356,25 +367,37 @@ class ThreadletTracker(object):
 
 class CLIB(object):
     
-    def __init__(self, frac_hash_file, threadlets, down_dir, link=None, max_threadlets=1000, auth_tuple=None,
-                 aws_key=None, aws_secret_key=None, aws_bucket_name=None, aws_file_key=None):
-        if args.aws_key:
-            self.baldur_client = BaldurClient(args.fracfile, int(args.threadlets), args.downdir, 
-                       aws_key=args.aws_key, aws_secret_key=args.aws_secret_key, aws_bucket_name=args.s3_bucket, 
-                       aws_file_key=args.s3_file_key)
+    def __init__(self, frac_hash_file=None, threadlets=1, down_dir=None, link=None, bs_link=None, max_threadlets=1000, auth_tuple=None,
+                 aws_key=None, aws_secret_key=None, aws_bucket_name=None, aws_file_key=None, debug=False):
+        if aws_key:
+            self.baldur_client = BaldurClient(frac_hash_file, threadlets, downdir, 
+                       aws_key=aws_key, aws_secret_key=aws_secret_key, aws_bucket_name=s3_bucket, 
+                       aws_file_key=s3_file_key)
+        elif bs_link:
+            frac_hash_data = self.get_bs_server_hash(bs_link)
+            self.baldur_client = BaldurClient(threadlets=int(args.threadlets), down_dir=args.downdir, link=bs_link, 
+                                              auth_tuple=auth_tuple, frac_hash_data=frac_hash_data)
         else:
             self.baldur_client = BaldurClient(args.fracfile, int(args.threadlets), args.downdir, args.link, auth_tuple=auth_tuple)
+        self.debug = debug
+    
+    def get_bs_server_hash(self, bs_link):
+        api_path = '/api/0.1/' + os.path.basename(bs_link)
+        response = rest_get(os.path.dirname(bs_link).replace('http://', ''), api_path)
+        return json.loads(response)
     
     def start_download(self):
         self.baldur_client.spawn_threadlets()
         self.baldur_client.download_q(self.download_progress)
+        print '\n'
         while 1:
-            print '\nvalidating chunks'
+            print 'validating chunks'
             self.baldur_client.check_pieces()
             if self.baldur_client.q.qsize():
-                print 'redownloading a few chunks'
+                print 'redownloading %s chunks' % (self.baldur_client.q.qsize())
                 self.baldur_client.download_q()
             else:
+                print '\nchunks validated'
                 break
         print '\ntotal download time', (time.clock() - self.baldur_client.start_time)/60, ' minutes'
         self.baldur_client.clean_up()
@@ -392,9 +415,10 @@ class CLIB(object):
             print 'Download successful.'
             
     def download_progress(self, qsize):
-        messages = self.baldur_client.check_messages()
-        for message in messages:
-            print message
+        if self.debug:
+            messages = self.baldur_client.check_messages()
+            for message in messages:
+                print message
         sys.stdout.write('\r')
         sys.stdout.write('{0:8} remaining chunks to download'.format(str(qsize())))
     
@@ -403,6 +427,8 @@ if __name__ == '__main__':
     parser.add_argument('-f', '--fracfile', nargs='?', default=None, help=\
                         "Specifies fractional hash file name.")
     parser.add_argument('-l', '--link', nargs='?', default=None, help=\
+                        "Url to file to download.")
+    parser.add_argument('-a', '--baldur_server_link', nargs='?', default=None, help=\
                         "Url to file to download.")
     parser.add_argument('-t', '--threadlets', nargs='?', default=8, const='a', help=\
                         "Specifies starting threadlet number. Defaults to 8.")
@@ -420,14 +446,15 @@ if __name__ == '__main__':
                     "S3 bucket name for S3 download.")
     parser.add_argument('-y', '--s3_file_key', nargs='?', const='a', default=None, help=\
                     "S3 file key for S3 download.")
-
+    parser.add_argument('-g', '--debug', nargs='?', const=True, default=False, help=\
+                    "Turn on debug output.")
     
     args = parser.parse_args()
     
-    if not args.fracfile:
-        print 'Must specify fractional file.'
-    if not args.link:
-        print 'Must specify url.'
+    if not args.fracfile and not args.baldur_server_link:
+        print 'Must specify fractional file or baldur server link.'
+    if not args.link and not args.baldur_server_link:
+        print 'Must specify url or baldur server link.'
     if not args.downdir:
         args.downdir = os.getcwd()
     if args.userauth and args.userpass:
@@ -438,7 +465,10 @@ if __name__ == '__main__':
         bclient = CLIB(args.fracfile, int(args.threadlets), args.downdir, 
                        aws_key=args.aws_key, aws_secret_key=args.aws_secret_key, aws_bucket_name=args.s3_bucket, 
                        aws_file_key=args.s3_file_key)
+    elif args.baldur_server_link:
+        bclient = CLIB(int(args.threadlets), args.downdir, bs_link=args.baldur_server_link, auth_tuple=auth_tuple, 
+                       debug=args.debug)
     else:
-        bclient = CLIB(args.fracfile, int(args.threadlets), args.downdir, args.link, auth_tuple=auth_tuple)
+        bclient = CLIB(args.fracfile, int(args.threadlets), args.downdir, args.link, auth_tuple=auth_tuple, debug=args.debug)
     print 'Beginning download...'
     bclient.start_download()

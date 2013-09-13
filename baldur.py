@@ -13,6 +13,7 @@ import urllib2
 import hashlib
 import argparse
 import httplib
+from urlparse import urlparse
 
 class Fake_FQDN(object):
     def __init__(self):
@@ -30,6 +31,7 @@ fqdn_obj = Fake_FQDN()
 fileDownloader.socket.getfqdn = fqdn_obj.fakefqdn
 
 def rest_get(url, path):
+    print url, path
     conn = httplib.HTTPConnection(url)
     conn.request("GET", path)
     try:
@@ -382,8 +384,10 @@ class CLIB(object):
         self.debug = debug
     
     def get_bs_server_hash(self, bs_link):
-        api_path = '/api/0.1/' + os.path.basename(bs_link)
-        response = rest_get(os.path.dirname(bs_link).replace('http://', ''), api_path)
+        api_path = '/frachash/' + os.path.basename(bs_link)
+        parsed_uri = urlparse(bs_link)
+        domain = '{uri.scheme}://{uri.netloc}'.format(uri=parsed_uri)
+        response = rest_get(domain.replace('http://', ''), api_path)
         return json.loads(response)
     
     def start_download(self):

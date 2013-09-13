@@ -15,6 +15,8 @@ import urlparse
 import datetime
 import json
 import uuid
+import copy
+from routes import Mapper
 import frac_hasher
 
 
@@ -50,7 +52,7 @@ div.foot { font-family: "Courier New", Courier, monospace; font-size: 10pt; colo
 <tbody>
 <tr><td class="n"><a href="../">Parent Directory</a>/</td><td class="m">&nbsp;</td><td class="s">- &nbsp;</td><td class="t">Directory</td></tr>'''
 
-list_item = '''<tr><td class="n"><a href="%s">%s</a></td><td class="m">%s</td><td class="s">%s &nbsp;</td><td class="t">Directory</td></tr>'''
+list_item = '''<tr><td class="n"><a href="/files%s">%s</a></td><td class="m">%s</td><td class="s">%s &nbsp;</td><td class="t">Directory</td></tr>'''
 
 end_html = '''</tbody>
 </table>
@@ -73,8 +75,17 @@ class BaldurServer(object):
         self.ip_address = ip_address
         self.no_greenlet = no_greenlet
         self.root_dir = root_dir
+        self.url_map = Mapper()
+        self.make_url_map()
         self.serv_root = os.getcwd()
         self.t_tracker = ThreadletTracker()
+    
+    def make_url_map(self):
+        self.url_map.connect(None, "/dashboard-json/{type}", controller="send_dashboard_json")
+        self.url_map.connect(None, "/dashboard{extra:.*?}", controller="send_dashboard_html")
+        self.url_map.connect(None, "/frachash/{file_path:.*?}", controller="process_frac_hash_request_handler")
+        self.url_map.connect(None, "/files{file_path:.*?}", controller="process_file_path_handler")
+        self.url_map.connect(None, "/", controller="send_home")
     
     def start_server(self):
         print 'refreshing file list'
@@ -109,10 +120,16 @@ class BaldurServer(object):
         self.clear_header()
         request = Request(data)
         if request.method == 'GET':
-            self.handle_get(request, conn, addr, t_tracker)
+            self.handle_get2(request, conn, addr, t_tracker)
         elif request.method == 'POST':
             self.handle_post(request, conn, addr, t_tracker)
             
+    def handle_get2(self, request, conn, addr, t_tracker):
+        os.chdir(self.root_dir)
+        match = self.url_map.match(request.hpath)
+        if match:
+            getattr(self, match['controller'])(match, request, conn, addr, t_tracker)
+    
     def handle_get(self, request, conn, addr, t_tracker):
         """can pull this logic out to a separate file if needed, like an urls.py or something"""
         headers = []
@@ -149,35 +166,51 @@ class BaldurServer(object):
         headers.append(('Content-type',	'text/html'))
         self.send_response(404, headers, conn, 'Badness occured.')
         return
+    
+    def send_home(self, match, request, conn, addr, t_tracker):
+        headers = [("Content-Type", "text/html")]
+        f = open(os.path.join(self.serv_root, 'home.html'), 'r')
+        home_html = f.read()
+        self.send_response(200, headers, conn, home_html)
+        conn.close()
+    
+    def process_file_path_handler(self, match, request, conn, addr, t_tracker):
+        path_list = [x for x in match['file_path'].split('?')[0].split('/') if len(x) > 0]
+        self.process_file_path(path_list, path_list, request, conn, addr, t_tracker)
             
-    def process_file_path(self, path_list, full_path_list, request, headers, conn, addr, t_tracker):
+    def process_file_path(self, path_list, full_path_list, request, conn, addr, t_tracker):
         if len(path_list) > 1:
             os.chdir(urllib.unquote(path_list[0]))
-            self.process_file_path(path_list[1:], full_path_list, request, headers, conn, addr, t_tracker)
+            self.process_file_path(path_list[1:], full_path_list, request, conn, addr, t_tracker)
         else:
             if not path_list:
-                self.send_cwd_html(full_path_list, headers, conn)
+                self.send_cwd_html(full_path_list, conn)
             elif os.path.isdir(urllib.unquote(path_list[0])):
                 os.chdir(urllib.unquote(path_list[0]))
-                self.send_cwd_html(full_path_list, headers, conn)
+                self.send_cwd_html(full_path_list, conn)
             else:
-                self.send_file(urllib.unquote(path_list[0]), headers, conn, request, addr, t_tracker)
+                self.send_file(urllib.unquote(path_list[0]), conn, request, addr, t_tracker)
     
-    def process_frac_hash_request(self, path_list, request, headers, conn):
-        if len(path_list) > 3:
-            os.chdir(urllib.unquote(path_list[2]))
-            self.process_file_path(path_list[3:], path_list, request, headers, conn)
+    def process_frac_hash_request_handler(self, match, request, conn, addr, t_tracker):
+        path_list = [x for x in match['file_path'].split('?')[0].split('/') if len(x) > 0]
+        self.process_frac_hash_request(path_list, request, conn)
+    
+    def process_frac_hash_request(self, path_list, request, conn):
+        if len(path_list) > 1:
+            os.chdir(urllib.unquote(path_list[1]))
+            self.process_file_path(path_list[2:], path_list, request, conn)
         else:
             if not path_list:
-                self.send_cwd_html(path_list, headers, conn)
-            elif os.path.isdir(urllib.unquote(path_list[2])):
-                os.chdir(urllib.unquote(path_list[2]))
-                self.send_cwd_html(path_list, headers, conn)
+                self.send_cwd_html(path_list, conn)
+            elif os.path.isdir(urllib.unquote(path_list[0])):
+                os.chdir(urllib.unquote(path_list[0]))
+                self.send_cwd_html(path_list, conn)
             else:
-                self.send_json(urllib.unquote(path_list[2]), headers, conn, request)
+                self.send_json(urllib.unquote(path_list[0]), conn, request)
             
-    def send_cwd_html(self, path_list, headers, conn):
-        send_html = file_html_start % ('fake title', 'fake title')
+    def send_cwd_html(self, path_list, conn):
+        headers = [("Content-Type", "text/html")]
+        send_html = file_html_start % ('Baldur Server', 'Baldur Server')
         baldur_files = self.get_files_list().keys()
         all_files = os.listdir(os.getcwd())
         for file in all_files:
@@ -192,11 +225,12 @@ class BaldurServer(object):
                     continue
                 size_str = os.path.getsize(file)
                 file_str = file
-            send_html += list_item % (self.list_to_path(path_list) + '/' + urllib.quote(file)+'/', file_str, date_str, size_str)
+            send_html += list_item % (self.list_to_path(path_list) + '/' + urllib.quote(file), file_str, date_str, size_str)
         send_html += end_html
         self.send_response(200, headers, conn, send_html)
+        conn.close()
         
-    def send_file(self, file_name, headers, conn, request, addr, t_tracker):
+    def send_file(self, file_name, conn, request, addr, t_tracker):
         if not os.path.exists(file_name):
             self.send404(conn)
             return
@@ -236,8 +270,10 @@ class BaldurServer(object):
                 break # end of file
         f.close()
         t_tracker.dead(os.path.abspath(file_name), addr[0], t_uuid)
+        conn.close()
 
-    def send_json(self, file_name, headers, conn, request):
+    def send_json(self, file_name, conn, request):
+        headers = [("Content-Type", "application/json")]
         self.set_response(200)
         self.add_header('Content-type', 'application/json')
         self.send_header(conn)
@@ -250,6 +286,7 @@ class BaldurServer(object):
                 break # end of file
         f.close()
         os.chdir('..')
+        conn.close()
     
     def set_response(self, response_code):
         if response_code == 200:
@@ -328,7 +365,6 @@ class BaldurServer(object):
         changed = False
         for file in baldur_list.keys():
             if not os.path.exists(file):
-                print file, os.getcwd()
                 changed = True
                 baldur_list.pop(file)
                 os.remove('./.baldur/'+os.path.basename(file)+'.frac')
@@ -353,7 +389,6 @@ class BaldurServer(object):
                 self.check_mod(file)
         
     def check_baldur_list(self):
-        print os.getcwd()
         if not os.path.exists('.baldur'):
             os.mkdir('.baldur')
         os.chdir('.baldur')
@@ -402,14 +437,21 @@ class BaldurServer(object):
             path_str += '/' + path
         return path_str
         
-    def send_dashboard_html(self, request, headers, conn, t_tracker):
+    def send_dashboard_html(self, match, request, conn, addr, t_tracker):
+        headers = [("Content-Type", "text/html")]
         f = open(os.path.join(self.serv_root, 'dashboard.html'), 'r')
         dash_html = f.read()
         self.send_response(200, headers, conn, dash_html)
+        conn.close()
         
-    def send_dashboard_json(self, request, headers, conn, t_tracker):
-        t_list = json.dumps(t_tracker.calc_data())
+    def send_dashboard_json(self, match, request, conn, addr, t_tracker):
+        headers = [("Content-Type", "application/json")]
+        if match['type'] == 'dead':
+            t_list = json.dumps(t_tracker.calc_dead_data())
+        else:
+            t_list = json.dumps(t_tracker.calc_live_data())
         self.send_response(200, headers, conn, t_list)
+        conn.close()
         
 class Request(object):
     """Represents the request from the client"""
@@ -446,13 +488,14 @@ class Request(object):
 class ThreadletTracker(object):
     def __init__(self):
         self.workers = {}
+        self.dead_workers = {}
     
     def add(self, filename, addr, filesize, uuid):
         if filename+'@'+str(addr) in self.workers.keys():
-            self.workers[filename+'@'+str(addr)][uuid] = {'filename': filename, 'addr': addr, 'pos': 0, 'dead': False}
+            self.workers[filename+'@'+str(addr)][uuid] = {'filename': filename, 'addr': addr, 'pos': 0, 'dead': False, 'born': str(time.time())}
         else:
             self.workers[filename+'@'+str(addr)] = {uuid: {'filename': filename, 'addr': addr, 'pos': 0, 'dead': False,
-                                                           }, 'filesize': os.path.getsize(filename)}
+                                                           'born': str(time.time())}, 'filesize': os.path.getsize(filename)}
         
     def update_pos(self, filename, addr, uuid, pos):
         self.workers[filename+'@'+str(addr)][uuid]['pos'] = pos
@@ -460,17 +503,25 @@ class ThreadletTracker(object):
     def dead(self, filename, addr, uuid):
         self.workers[filename+'@'+str(addr)][uuid]['dead'] = True
         
-    def calc_data(self):
+    def calc_dead_data(self):
+        self.clean_dead()
+        return self.calc_data(self.dead_workers)
+    
+    def calc_live_data(self):
+        self.clean_dead()
+        return self.calc_data(self.workers)
+        
+    def calc_data(self, workers):
         data_list = []
-        for t in self.workers:
+        for t in workers:
             data_dict = {'dead_data': 0, 'live_data': 0, 'filename': t.split('@')[0], 'address': t.split('@')[1]}
-            for g in self.workers[t]:
+            for g in workers[t]:
                 if g == 'filesize':
-                    data_dict['filesize'] = self.workers[t]['filesize']
-                elif self.workers[t][g]['dead']:
-                    data_dict['dead_data'] += self.workers[t][g]['pos']
+                    data_dict['filesize'] = workers[t]['filesize']
+                elif workers[t][g]['dead']:
+                    data_dict['dead_data'] += workers[t][g]['pos']
                 else:
-                    data_dict['live_data'] += self.workers[t][g]['pos']
+                    data_dict['live_data'] += workers[t][g]['pos']
             data_dict['percent_done'] = ((data_dict['live_data'] + data_dict['dead_data']) * 100)/ data_dict['filesize']
             data_list.append(data_dict)
         return data_list
@@ -484,29 +535,21 @@ class ThreadletTracker(object):
         return total_speed
         
     def clean_dead(self):
-        alive_workers = []
-        for index, worker in enumerate(self.workers):
-            if not worker.dead:
-                alive_workers.append(worker)
-            elif worker.timeout:
-                self.timeouts += 1
-            else:
-                if worker.chunk_id:
-                    hashlet = Hashlet(worker.id, self.down_dir, self.g_queue, self.message_q, self.frac_hash_data)
-                    self.hpool.spawn(hashlet.check_chunk, worker.chunk_id, dir)
-        self.workers = alive_workers
-        return len(alive_workers)
-
-    def set_speed_data(self):
-        self.prev_prev_speed = self.prev_speed
-        self.prev_speed = self.cur_speed
-        self.cur_speed = self.get_total()
-        
-    def set_threadlet_data(self, new_threadlets):
-        self.prev_prev_threadlets = self.prev_threadlets
-        self.prev_threadlets = self.cur_threadlets
-        self.cur_threadlets = new_threadlets
-        
+        worker_dict = copy.copy(self.workers)
+        for worker in worker_dict:
+            alive = False
+            for threadlet in worker_dict[worker]:
+                if threadlet == 'filesize':
+                    continue
+                if (time.time() - float(worker_dict[worker][threadlet]['born'])) < 500:
+                    alive = True
+                if not worker_dict[worker][threadlet]['dead']:
+                    if not (time.time() - float(worker_dict[worker][threadlet]['born'])) > 7200:
+                        alive = True
+            if not alive:
+                self.dead_workers[worker] = worker_dict[worker]
+                self.workers.pop(worker)
+                
         
 if __name__ == "__main__":
     server = BaldurServer(root_dir=r'C:\test-downloads\test_download\50MB')

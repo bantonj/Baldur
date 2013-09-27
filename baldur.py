@@ -1,6 +1,5 @@
 #Baldur MFT Client Prototype
-
-from gevent import monkey; monkey.patch_socket(), monkey.patch_time(), monkey.patch_all()
+#from gevent import monkey; monkey.patch_socket(), monkey.patch_time(), monkey.patch_all()
 import os
 import json
 import time
@@ -14,6 +13,7 @@ import hashlib
 import argparse
 import httplib
 from urlparse import urlparse
+import greenlet #need to implicitly import to make py2exe work properly
 
 class Fake_FQDN(object):
     def __init__(self):
@@ -31,7 +31,6 @@ fqdn_obj = Fake_FQDN()
 fileDownloader.socket.getfqdn = fqdn_obj.fakefqdn
 
 def rest_get(url, path):
-    print url, path
     conn = httplib.HTTPConnection(url)
     conn.request("GET", path)
     try:

@@ -16,9 +16,13 @@ import datetime
 import json
 import uuid
 import copy
+import argparse
 from routes import Mapper
+from repoze import lru
 import frac_hasher
-
+import greenlet
+from zope.password import password as zpass
+import zope.interface
 
 
 #hard coded for http protocol
@@ -50,7 +54,7 @@ div.foot { font-family: "Courier New", Courier, monospace; font-size: 10pt; colo
 <table summary="Directory Listing" cellpadding="0" cellspacing="0">
 <thead><tr><th class="n">Name</th><th class="m">Last Modified</th><th class="s">Size</th><th class="t">Type</th></tr></thead>
 <tbody>
-<tr><td class="n"><a href="../">Parent Directory</a>/</td><td class="m">&nbsp;</td><td class="s">- &nbsp;</td><td class="t">Directory</td></tr>'''
+<tr><td class="n"><a href="%s">Parent Directory</a>/</td><td class="m">&nbsp;</td><td class="s">- &nbsp;</td><td class="t">Directory</td></tr>'''
 
 list_item = '''<tr><td class="n"><a href="/files%s">%s</a></td><td class="m">%s</td><td class="s">%s &nbsp;</td><td class="t">Directory</td></tr>'''
 
@@ -88,7 +92,6 @@ class BaldurServer(object):
         self.url_map.connect(None, "/", controller="send_home")
     
     def start_server(self):
-        print 'refreshing file list'
         self.check_old_files(self.root_dir)
         self.start_folder_watcher()
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -126,9 +129,39 @@ class BaldurServer(object):
             
     def handle_get2(self, request, conn, addr, t_tracker):
         os.chdir(self.root_dir)
-        match = self.url_map.match(request.hpath)
-        if match:
-            getattr(self, match['controller'])(match, request, conn, addr, t_tracker)
+        if request.headers.has_key('Authorization'):
+            auth = request.headers['Authorization']
+        else:
+            self.send401(conn)
+        if self.authenticate(auth):
+            match = self.url_map.match(request.hpath)
+            if match:
+                getattr(self, match['controller'])(match, request, conn, addr, t_tracker)
+            else:
+                self.send404(conn)
+        else:
+            self.send401(conn)
+            
+    def send401(self, conn):
+        headers = []
+        headers.append(('Content-type',	'text/html'))
+        headers.append(('WWW-Authenticate', 'Basic realm="Password protected area"'))
+        self.send_response(401, headers, conn, 'Not Authorized.')
+        conn.close()
+        return
+        
+    def authenticate(self, auth_str):
+        check_settings_file('baldur_server_passwd.json')
+        passman = zpass.SSHAPasswordManager()
+        user = base64.b64decode(auth_str.replace("Basic ", "")).split(':')[0]
+        submit_passwd = base64.b64decode(auth_str.replace("Basic ", "")).split(':')[1]
+        pass_file = read_settings_file('baldur_server_passwd.json')
+        if not user in pass_file.keys():
+            return False
+        if passman.checkPassword(pass_file[user], submit_passwd):
+            return True
+        else:
+            return False
     
     def handle_get(self, request, conn, addr, t_tracker):
         """can pull this logic out to a separate file if needed, like an urls.py or something"""
@@ -165,6 +198,7 @@ class BaldurServer(object):
         headers = []
         headers.append(('Content-type',	'text/html'))
         self.send_response(404, headers, conn, 'Badness occured.')
+        conn.close()
         return
     
     def send_home(self, match, request, conn, addr, t_tracker):
@@ -208,9 +242,15 @@ class BaldurServer(object):
             else:
                 self.send_json(urllib.unquote(path_list[0]), conn, request)
             
+    def build_back_link(self, path_list):
+        back_html = '/files/'
+        for path in path_list[:-1]:
+            back_html += path + '/'
+        return back_html
+            
     def send_cwd_html(self, path_list, conn):
         headers = [("Content-Type", "text/html")]
-        send_html = file_html_start % ('Baldur Server', 'Baldur Server')
+        send_html = file_html_start % ('Baldur Server', 'Baldur Server', self.build_back_link(path_list))
         baldur_files = self.get_files_list().keys()
         all_files = os.listdir(os.getcwd())
         for file in all_files:
@@ -332,7 +372,6 @@ class BaldurServer(object):
         
     def start_folder_watcher_task(self):
         while 1:
-            print 'the watcher!'
             if not self.no_greenlet:
                 g = Greenlet(self.check_folder)
                 g.start()
@@ -516,7 +555,7 @@ class ThreadletTracker(object):
         for t in workers:
             data_dict = {'dead_data': 0, 'live_data': 0, 'filename': t.split('@')[0], 'address': t.split('@')[1]}
             for g in workers[t]:
-                if g == 'filesize':
+                if g == 'filesize' or g =='time_of_death':
                     data_dict['filesize'] = workers[t]['filesize']
                 elif workers[t][g]['dead']:
                     data_dict['dead_data'] += workers[t][g]['pos']
@@ -539,7 +578,7 @@ class ThreadletTracker(object):
         for worker in worker_dict:
             alive = False
             for threadlet in worker_dict[worker]:
-                if threadlet == 'filesize':
+                if threadlet == 'filesize' or threadlet == 'time_of_death':
                     continue
                 if (time.time() - float(worker_dict[worker][threadlet]['born'])) < 500:
                     alive = True
@@ -548,10 +587,53 @@ class ThreadletTracker(object):
                         alive = True
             if not alive:
                 self.dead_workers[worker] = worker_dict[worker]
-                self.workers.pop(worker)
+                self.dead_workers[worker]['time_of_death'] = str(time.time())
+                del self.workers[worker]
                 
+def add_user(user_pass):
+    """Adds a user account to the passwords file. Creates the file if none exists"""
+    check_settings_file('baldur_server_passwd.json')
+    passman = zpass.SSHAPasswordManager()
+    passes = read_settings_file('baldur_server_passwd.json')
+    passes[user_pass.split(':')[0]] = passman.encodePassword(user_pass.split(':')[0])
+    save_settings_file('baldur_server_passwd.json', passes)
+
+def remove_user(user):
+    """Adds a user account to the passwords file. Creates the file if none exists"""
+    check_settings_file('baldur_server_passwd.json')
+    passes = read_settings_file('baldur_server_passwd.json')
+    if not user in passes.keys():
+        print 'User %s not found.' % (user)
+        return
+    del passes[user]
+    save_settings_file('baldur_server_passwd.json', passes)
+    
+def check_settings_file(filename):
+    if not os.path.exists(os.path.join(os.path.dirname(sys.argv[0]), filename)):
+        with open(os.path.join(os.path.dirname(sys.argv[0]), filename), 'w') as f:
+            f.write(json.dumps({}))
+        
+def read_settings_file(filename):
+    with open(os.path.join(os.path.dirname(sys.argv[0]), filename), 'r') as f:
+        return json.loads(f.read())
+    
+def save_settings_file(filename, setting_dict):
+    with open(os.path.join(os.path.dirname(sys.argv[0]), filename), 'w') as f:
+        f.write(json.dumps(setting_dict))
         
 if __name__ == "__main__":
-    server = BaldurServer(root_dir=r'C:\test-downloads\test_download\50MB')
-    #server = BaldurServer(ip_address='192.168.16.36', root_dir=r'C:\test-downloads\test-dcp-nas')
-    server.start_server()
+    parser = argparse.ArgumentParser(description='HTTP File Server with Baldur Download Support.')
+    parser.add_argument('-a', '--add_user', nargs='?', const=True, default=False, help=\
+                    "Adds or modifies user account in passwords file. Use username:password format.")
+    parser.add_argument('-d', '--remove_user', nargs='?', const=True, default=False, help=\
+                    "Removes a user account in passwords file. Only specify username.")
+    
+    args = parser.parse_args()
+    if args.add_user:
+        add_user(args.add_user)
+    elif args.remove_user:
+        remove_user(args.remove_user)
+    else:
+        settings = read_settings_file('baldur_server_config.json')
+        server = BaldurServer(root_dir=settings['root_dir'], ip_address=settings['ip_address'], port=settings['port'])
+        server.start_server()
